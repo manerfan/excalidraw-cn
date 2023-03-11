@@ -84,12 +84,20 @@ export const FONT_FAMILY = {
   Cascadia: 3,
 };
 
+// custom fonts
+export const FONT_FAMILY_STRING: Record<string, string> = {
+  Virgil: "Virgil, HandwrittenCn",
+  Helvetica: "Helvetica",
+  Cascadia: "Cascadia",
+};
+
 export const THEME = {
   LIGHT: "light",
   DARK: "dark",
 };
 
-export const WINDOWS_EMOJI_FALLBACK_FONT = "Segoe UI Emoji";
+export const WINDOWS_EMOJI_FALLBACK_FONT =
+  'system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans","Liberation Sans",sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji"';
 
 export const DEFAULT_FONT_SIZE = 20;
 export const DEFAULT_FONT_FAMILY: FontFamilyValues = FONT_FAMILY.Virgil;

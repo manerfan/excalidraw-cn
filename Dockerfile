@@ -6,6 +6,7 @@ COPY package.json yarn.lock ./
 RUN yarn --ignore-optional --network-timeout 600000
 
 ARG NODE_ENV=production
+ARG EXCALIDRAW_ASSET_PATH=/
 
 COPY . .
 RUN yarn build:app:docker

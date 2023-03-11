@@ -3,6 +3,7 @@ if (process.env.NODE_ENV !== ENV.TEST) {
   /* eslint-disable */
   /* global __webpack_public_path__:writable */
   __webpack_public_path__ =
+    process.env.EXCALIDRAW_ASSET_PATH ||
     window.EXCALIDRAW_ASSET_PATH ||
     `https://unpkg.com/${process.env.PKG_NAME}@${process.env.PKG_VERSION}/dist/`;
 }
