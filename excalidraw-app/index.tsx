@@ -738,6 +738,8 @@ const ExcalidrawWrapper = () => {
             />
           );
         }}
+        // allow all urls
+        validateEmbeddable={true}
       >
         <AppMainMenu
           setCollabDialogShown={setCollabDialogShown}
