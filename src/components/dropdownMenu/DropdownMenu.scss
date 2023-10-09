@@ -11,8 +11,6 @@
       top: auto;
       left: 0;
       width: 100%;
-      display: flex;
-      flex-direction: column;
       row-gap: 0.75rem;
 
       .dropdown-menu-container {
@@ -59,6 +57,11 @@
 
       @media screen and (min-width: 1921px) {
         height: 2.25rem;
+      }
+
+      &--selected {
+        background: var(--color-primary-light);
+        --icon-fill-color: var(--color-primary-darker);
       }
 
       &__text {

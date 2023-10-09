@@ -3,6 +3,7 @@ import {
   ExcalidrawSelectionElement,
   ExcalidrawTextElement,
   FontFamilyValues,
+  PointBinding,
   StrokeRoundness,
 } from "../element/types";
 import {
@@ -27,13 +28,21 @@ import {
   PRECEDING_ELEMENT_KEY,
   FONT_FAMILY,
   ROUNDNESS,
+  DEFAULT_SIDEBAR,
+  DEFAULT_ELEMENT_PROPS,
 } from "../constants";
 import { getDefaultAppState } from "../appState";
 import { LinearElementEditor } from "../element/linearElementEditor";
 import { bumpVersion } from "../element/mutateElement";
-import { getUpdatedTimestamp, updateActiveTool } from "../utils";
+import { getFontString, getUpdatedTimestamp, updateActiveTool } from "../utils";
 import { arrayToMap } from "../utils";
-import oc from "open-color";
+import { MarkOptional, Mutable } from "../utility-types";
+import {
+  detectLineHeight,
+  getDefaultLineHeight,
+  measureBaseline,
+} from "../element/textElement";
+import { normalizeLink } from "./url";
 
 type RestoredAppState = Omit<
   AppState,
@@ -55,7 +64,10 @@ export const AllowedExcalidrawActiveTools: Record<
   freedraw: true,
   eraser: false,
   custom: true,
+  frame: true,
+  embeddable: true,
   hand: true,
+  laser: false,
 };
 
 export type RestoredDataState = {
@@ -71,6 +83,13 @@ const getFontFamilyByName = (fontFamilyName: string): FontFamilyValues => {
     ] as FontFamilyValues;
   }
   return DEFAULT_FONT_FAMILY;
+};
+
+const repairBinding = (binding: PointBinding | null) => {
+  if (!binding) {
+    return null;
+  }
+  return { ...binding, focus: binding.focus || 0 };
 };
 
 const restoreElementWithProperties = <
@@ -104,20 +123,23 @@ const restoreElementWithProperties = <
     versionNonce: element.versionNonce ?? 0,
     isDeleted: element.isDeleted ?? false,
     id: element.id || randomId(),
-    fillStyle: element.fillStyle || "hachure",
-    strokeWidth: element.strokeWidth || 1,
-    strokeStyle: element.strokeStyle ?? "solid",
-    roughness: element.roughness ?? 1,
-    opacity: element.opacity == null ? 100 : element.opacity,
+    fillStyle: element.fillStyle || DEFAULT_ELEMENT_PROPS.fillStyle,
+    strokeWidth: element.strokeWidth || DEFAULT_ELEMENT_PROPS.strokeWidth,
+    strokeStyle: element.strokeStyle ?? DEFAULT_ELEMENT_PROPS.strokeStyle,
+    roughness: element.roughness ?? DEFAULT_ELEMENT_PROPS.roughness,
+    opacity:
+      element.opacity == null ? DEFAULT_ELEMENT_PROPS.opacity : element.opacity,
     angle: element.angle || 0,
     x: extra.x ?? element.x ?? 0,
     y: extra.y ?? element.y ?? 0,
-    strokeColor: element.strokeColor || oc.black,
-    backgroundColor: element.backgroundColor || "transparent",
+    strokeColor: element.strokeColor || DEFAULT_ELEMENT_PROPS.strokeColor,
+    backgroundColor:
+      element.backgroundColor || DEFAULT_ELEMENT_PROPS.backgroundColor,
     width: element.width || 0,
     height: element.height || 0,
     seed: element.seed ?? 1,
     groupIds: element.groupIds ?? [],
+    frameId: element.frameId ?? null,
     roundness: element.roundness
       ? element.roundness
       : element.strokeSharpness === "round"
@@ -133,7 +155,7 @@ const restoreElementWithProperties = <
       ? element.boundElementIds.map((id) => ({ type: "arrow", id }))
       : element.boundElements ?? [],
     updated: element.updated ?? getUpdatedTimestamp(),
-    link: element.link ?? null,
+    link: element.link ? normalizeLink(element.link) : null,
     locked: element.locked ?? false,
   };
 
@@ -164,17 +186,40 @@ const restoreElement = (
         const [fontPx, _fontFamily]: [string, string] = (
           element as any
         ).font.split(" ");
-        fontSize = parseInt(fontPx, 10);
+        fontSize = parseFloat(fontPx);
         fontFamily = getFontFamilyByName(_fontFamily);
       }
+      const text = element.text ?? "";
+
+      // line-height might not be specified either when creating elements
+      // programmatically, or when importing old diagrams.
+      // For the latter we want to detect the original line height which
+      // will likely differ from our per-font fixed line height we now use,
+      // to maintain backward compatibility.
+      const lineHeight =
+        element.lineHeight ||
+        (element.height
+          ? // detect line-height from current element height and font-size
+            detectLineHeight(element)
+          : // no element height likely means programmatic use, so default
+            // to a fixed line height
+            getDefaultLineHeight(element.fontFamily));
+      const baseline = measureBaseline(
+        element.text,
+        getFontString(element),
+        lineHeight,
+      );
       element = restoreElementWithProperties(element, {
         fontSize,
         fontFamily,
-        text: element.text ?? "",
+        text,
         textAlign: element.textAlign || DEFAULT_TEXT_ALIGN,
         verticalAlign: element.verticalAlign || DEFAULT_VERTICAL_ALIGN,
         containerId: element.containerId ?? null,
-        originalText: element.originalText || element.text,
+        originalText: element.originalText || text,
+
+        lineHeight,
+        baseline,
       });
 
       if (refreshDimensions) {
@@ -204,7 +249,6 @@ const restoreElement = (
         startArrowhead = null,
         endArrowhead = element.type === "arrow" ? "arrow" : null,
       } = element;
-
       let x = element.x;
       let y = element.y;
       let points = // migrate old arrow model to new one
@@ -224,8 +268,8 @@ const restoreElement = (
           (element.type as ExcalidrawElement["type"] | "draw") === "draw"
             ? "line"
             : element.type,
-        startBinding: element.startBinding,
-        endBinding: element.endBinding,
+        startBinding: repairBinding(element.startBinding),
+        endBinding: repairBinding(element.endBinding),
         lastCommittedPoint: null,
         startArrowhead,
         endArrowhead,
@@ -242,6 +286,14 @@ const restoreElement = (
       return restoreElementWithProperties(element, {});
     case "diamond":
       return restoreElementWithProperties(element, {});
+    case "embeddable":
+      return restoreElementWithProperties(element, {
+        validated: null,
+      });
+    case "frame":
+      return restoreElementWithProperties(element, {
+        name: element.name ?? null,
+      });
 
     // Don't use default case so as to catch a missing an element type case.
     // We also don't want to throw, but instead return void so we filter
@@ -334,12 +386,32 @@ const repairBoundElement = (
   }
 };
 
+/**
+ * Remove an element's frameId if its containing frame is non-existent
+ *
+ * NOTE mutates elements.
+ */
+const repairFrameMembership = (
+  element: Mutable<ExcalidrawElement>,
+  elementsMap: Map<string, Mutable<ExcalidrawElement>>,
+) => {
+  if (element.frameId) {
+    const containingFrame = elementsMap.get(element.frameId);
+
+    if (!containingFrame) {
+      element.frameId = null;
+    }
+  }
+};
+
 export const restoreElements = (
   elements: ImportedDataState["elements"],
   /** NOTE doesn't serve for reconciliation */
   localElements: readonly ExcalidrawElement[] | null | undefined,
   opts?: { refreshDimensions?: boolean; repairBindings?: boolean } | undefined,
 ): ExcalidrawElement[] => {
+  // used to detect duplicate top-level element ids
+  const existingIds = new Set<string>();
   const localElementsMap = localElements ? arrayToMap(localElements) : null;
   const restoredElements = (elements || []).reduce((elements, element) => {
     // filtering out selection, which is legacy, no longer kept in elements,
@@ -354,6 +426,11 @@ export const restoreElements = (
         if (localElement && localElement.version > migratedElement.version) {
           migratedElement = bumpVersion(migratedElement, localElement.version);
         }
+        if (existingIds.has(migratedElement.id)) {
+          migratedElement = { ...migratedElement, id: randomId() };
+        }
+        existingIds.add(migratedElement.id);
+
         elements.push(migratedElement);
       }
     }
@@ -367,6 +444,10 @@ export const restoreElements = (
   // repair binding. Mutates elements.
   const restoredElementsMap = arrayToMap(restoredElements);
   for (const element of restoredElements) {
+    if (element.frameId) {
+      repairFrameMembership(element, restoredElementsMap);
+    }
+
     if (isTextElement(element) && element.containerId) {
       repairBoundElement(element, restoredElementsMap);
     } else if (element.boundElements) {
@@ -395,21 +476,15 @@ const LegacyAppStateMigrations: {
     defaultAppState: ReturnType<typeof getDefaultAppState>,
   ) => [LegacyAppState[K][1], AppState[LegacyAppState[K][1]]];
 } = {
-  isLibraryOpen: (appState, defaultAppState) => {
+  isSidebarDocked: (appState, defaultAppState) => {
     return [
-      "openSidebar",
-      "isLibraryOpen" in appState
-        ? appState.isLibraryOpen
-          ? "library"
-          : null
-        : coalesceAppStateValue("openSidebar", appState, defaultAppState),
-    ];
-  },
-  isLibraryMenuDocked: (appState, defaultAppState) => {
-    return [
-      "isSidebarDocked",
-      appState.isLibraryMenuDocked ??
-        coalesceAppStateValue("isSidebarDocked", appState, defaultAppState),
+      "defaultSidebarDockedPreference",
+      appState.isSidebarDocked ??
+        coalesceAppStateValue(
+          "defaultSidebarDockedPreference",
+          appState,
+          defaultAppState,
+        ),
     ];
   },
 };
@@ -478,14 +553,13 @@ export const restoreAppState = (
         ? {
             value: appState.zoom as NormalizedZoomValue,
           }
-        : appState.zoom || defaultAppState.zoom,
-    // when sidebar docked and user left it open in last session,
-    // keep it open. If not docked, keep it closed irrespective of last state.
+        : appState.zoom?.value
+        ? appState.zoom
+        : defaultAppState.zoom,
     openSidebar:
-      nextAppState.openSidebar === "library"
-        ? nextAppState.isSidebarDocked
-          ? "library"
-          : null
+      // string (legacy)
+      typeof (appState.openSidebar as any as string) === "string"
+        ? { name: DEFAULT_SIDEBAR.name }
         : nextAppState.openSidebar,
   };
 };

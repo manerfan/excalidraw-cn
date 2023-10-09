@@ -1,25 +1,35 @@
+import { vi } from "vitest";
 import ReactDOM from "react-dom";
-import { render, waitFor, GlobalTestState } from "./test-utils";
+import {
+  render,
+  waitFor,
+  GlobalTestState,
+  createPasteEvent,
+} from "./test-utils";
 import { Pointer, Keyboard } from "./helpers/ui";
-import ExcalidrawApp from "../excalidraw-app";
+import { Excalidraw } from "../packages/excalidraw/index";
 import { KEYS } from "../keys";
-import { getApproxLineHeight } from "../element/textElement";
-import { getFontString } from "../utils";
+import {
+  getDefaultLineHeight,
+  getLineHeightInPx,
+} from "../element/textElement";
 import { getElementBounds } from "../element";
 import { NormalizedZoomValue } from "../types";
+import { API } from "./helpers/api";
+import { copyToClipboard } from "../clipboard";
 
 const { h } = window;
 
 const mouse = new Pointer("mouse");
 
-jest.mock("../keys.ts", () => {
-  const actual = jest.requireActual("../keys.ts");
+vi.mock("../keys.ts", async (importOriginal) => {
+  const module: any = await importOriginal();
   return {
     __esmodule: true,
-    ...actual,
+    ...module,
     isDarwin: false,
     KEYS: {
-      ...actual.KEYS,
+      ...module.KEYS,
       CTRL_OR_CMD: "ctrlKey",
     },
   };
@@ -33,38 +43,28 @@ const setClipboardText = (text: string) => {
   });
 };
 
-const sendPasteEvent = () => {
-  const clipboardEvent = new Event("paste", {
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-  });
-
-  // set `clipboardData` properties.
-  // @ts-ignore
-  clipboardEvent.clipboardData = {
-    getData: () => window.navigator.clipboard.readText(),
-    files: [],
-  };
-
+const sendPasteEvent = (text?: string) => {
+  const clipboardEvent = createPasteEvent(
+    text || (() => window.navigator.clipboard.readText()),
+  );
   document.dispatchEvent(clipboardEvent);
 };
 
-const pasteWithCtrlCmdShiftV = () => {
+const pasteWithCtrlCmdShiftV = (text?: string) => {
   Keyboard.withModifierKeys({ ctrl: true, shift: true }, () => {
     //triggering keydown with an empty clipboard
     Keyboard.keyPress(KEYS.V);
     //triggering paste event with faked clipboard
-    sendPasteEvent();
+    sendPasteEvent(text);
   });
 };
 
-const pasteWithCtrlCmdV = () => {
+const pasteWithCtrlCmdV = (text?: string) => {
   Keyboard.withModifierKeys({ ctrl: true }, () => {
     //triggering keydown with an empty clipboard
     Keyboard.keyPress(KEYS.V);
     //triggering paste event with faked clipboard
-    sendPasteEvent();
+    sendPasteEvent(text);
   });
 };
 
@@ -79,11 +79,41 @@ beforeEach(async () => {
 
   mouse.reset();
 
-  await render(<ExcalidrawApp />);
-  h.app.setAppState({ zoom: { value: 1 as NormalizedZoomValue } });
+  await render(
+    <Excalidraw
+      autoFocus={true}
+      handleKeyboardGlobally={true}
+      initialData={{ appState: { zoom: { value: 1 as NormalizedZoomValue } } }}
+    />,
+  );
   setClipboardText("");
   Object.assign(document, {
     elementFromPoint: () => GlobalTestState.canvas,
+  });
+});
+
+describe("general paste behavior", () => {
+  it("should randomize seed on paste", async () => {
+    const rectangle = API.createElement({ type: "rectangle" });
+    const clipboardJSON = (await copyToClipboard([rectangle], null))!;
+    pasteWithCtrlCmdV(clipboardJSON);
+
+    await waitFor(() => {
+      expect(h.elements.length).toBe(1);
+      expect(h.elements[0].seed).not.toBe(rectangle.seed);
+    });
+  });
+
+  it("should retain seed on shift-paste", async () => {
+    const rectangle = API.createElement({ type: "rectangle" });
+    const clipboardJSON = (await copyToClipboard([rectangle], null))!;
+
+    // assert we don't randomize seed on shift-paste
+    pasteWithCtrlCmdShiftV(clipboardJSON);
+    await waitFor(() => {
+      expect(h.elements.length).toBe(1);
+      expect(h.elements[0].seed).toBe(rectangle.seed);
+    });
   });
 });
 
@@ -118,12 +148,10 @@ describe("paste text as single lines", () => {
 
   it("should space items correctly", async () => {
     const text = "hkhkjhki\njgkjhffjh\njgkjhffjh";
-    const lineHeight =
-      getApproxLineHeight(
-        getFontString({
-          fontSize: h.app.state.currentItemFontSize,
-          fontFamily: h.app.state.currentItemFontFamily,
-        }),
+    const lineHeightPx =
+      getLineHeightInPx(
+        h.app.state.currentItemFontSize,
+        getDefaultLineHeight(h.state.currentItemFontFamily),
       ) +
       10 / h.app.state.zoom.value;
     mouse.moveTo(100, 100);
@@ -135,19 +163,17 @@ describe("paste text as single lines", () => {
       for (let i = 1; i < h.elements.length; i++) {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const [fx, elY] = getElementBounds(h.elements[i]);
-        expect(elY).toEqual(firstElY + lineHeight * i);
+        expect(elY).toEqual(firstElY + lineHeightPx * i);
       }
     });
   });
 
   it("should leave a space for blank new lines", async () => {
     const text = "hkhkjhki\n\njgkjhffjh";
-    const lineHeight =
-      getApproxLineHeight(
-        getFontString({
-          fontSize: h.app.state.currentItemFontSize,
-          fontFamily: h.app.state.currentItemFontFamily,
-        }),
+    const lineHeightPx =
+      getLineHeightInPx(
+        h.app.state.currentItemFontSize,
+        getDefaultLineHeight(h.state.currentItemFontFamily),
       ) +
       10 / h.app.state.zoom.value;
     mouse.moveTo(100, 100);
@@ -158,7 +184,7 @@ describe("paste text as single lines", () => {
       const [fx, firstElY] = getElementBounds(h.elements[0]);
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const [lx, lastElY] = getElementBounds(h.elements[1]);
-      expect(lastElY).toEqual(firstElY + lineHeight * 2);
+      expect(lastElY).toEqual(firstElY + lineHeightPx * 2);
     });
   });
 });
@@ -224,7 +250,7 @@ describe("Paste bound text container", () => {
       await sleep(1);
       expect(h.elements.length).toEqual(2);
       const container = h.elements[0];
-      expect(container.height).toBe(354);
+      expect(container.height).toBe(368);
       expect(container.width).toBe(166);
     });
   });
@@ -247,7 +273,7 @@ describe("Paste bound text container", () => {
       await sleep(1);
       expect(h.elements.length).toEqual(2);
       const container = h.elements[0];
-      expect(container.height).toBe(740);
+      expect(container.height).toBe(770);
       expect(container.width).toBe(166);
     });
   });

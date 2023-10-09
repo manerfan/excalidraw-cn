@@ -2,12 +2,15 @@ import {
   ExcalidrawElement,
   NonDeletedExcalidrawElement,
 } from "./element/types";
-import { AppState, BinaryFiles } from "./types";
+import { BinaryFiles } from "./types";
 import { SVG_EXPORT_TAG } from "./scene/export";
 import { tryParseSpreadsheet, Spreadsheet, VALID_SPREADSHEET } from "./charts";
 import { EXPORT_DATA_TYPES, MIME_TYPES } from "./constants";
 import { isInitializedImageElement } from "./element/typeChecks";
-import { isPromiseLike } from "./utils";
+import { deepCopyElement } from "./element/newElement";
+import { mutateElement } from "./element/mutateElement";
+import { getContainingFrame } from "./frame";
+import { isPromiseLike, isTestEnv } from "./utils";
 
 type ElementsClipboard = {
   type: typeof EXPORT_DATA_TYPES.excalidrawClipboard;
@@ -21,6 +24,7 @@ export interface ClipboardData {
   files?: BinaryFiles;
   text?: string;
   errorMessage?: string;
+  programmaticAPI?: boolean;
 }
 
 let CLIPBOARD = "";
@@ -45,6 +49,7 @@ const clipboardContainsElements = (
     [
       EXPORT_DATA_TYPES.excalidraw,
       EXPORT_DATA_TYPES.excalidrawClipboard,
+      EXPORT_DATA_TYPES.excalidrawClipboardWithAPI,
     ].includes(contents?.type) &&
     Array.isArray(contents.elements)
   ) {
@@ -55,24 +60,56 @@ const clipboardContainsElements = (
 
 export const copyToClipboard = async (
   elements: readonly NonDeletedExcalidrawElement[],
-  appState: AppState,
   files: BinaryFiles | null,
 ) => {
+  const framesToCopy = new Set(
+    elements.filter((element) => element.type === "frame"),
+  );
+  let foundFile = false;
+
+  const _files = elements.reduce((acc, element) => {
+    if (isInitializedImageElement(element)) {
+      foundFile = true;
+      if (files && files[element.fileId]) {
+        acc[element.fileId] = files[element.fileId];
+      }
+    }
+    return acc;
+  }, {} as BinaryFiles);
+
+  if (foundFile && !files) {
+    console.warn(
+      "copyToClipboard: attempting to file element(s) without providing associated `files` object.",
+    );
+  }
+
   // select binded text elements when copying
   const contents: ElementsClipboard = {
     type: EXPORT_DATA_TYPES.excalidrawClipboard,
-    elements,
-    files: files
-      ? elements.reduce((acc, element) => {
-          if (isInitializedImageElement(element) && files[element.fileId]) {
-            acc[element.fileId] = files[element.fileId];
-          }
-          return acc;
-        }, {} as BinaryFiles)
-      : undefined,
+    elements: elements.map((element) => {
+      if (
+        getContainingFrame(element) &&
+        !framesToCopy.has(getContainingFrame(element)!)
+      ) {
+        const copiedElement = deepCopyElement(element);
+        mutateElement(copiedElement, {
+          frameId: null,
+        });
+        return copiedElement;
+      }
+
+      return element;
+    }),
+    files: files ? _files : undefined,
   };
   const json = JSON.stringify(contents);
+
+  if (isTestEnv()) {
+    return json;
+  }
+
   CLIPBOARD = json;
+
   try {
     PREFER_APP_CLIPBOARD = false;
     await copyTextToSystemClipboard(json);
@@ -156,6 +193,8 @@ export const parseClipboard = async (
 
   try {
     const systemClipboardData = JSON.parse(systemClipboard);
+    const programmaticAPI =
+      systemClipboardData.type === EXPORT_DATA_TYPES.excalidrawClipboardWithAPI;
     if (clipboardContainsElements(systemClipboardData)) {
       return {
         elements: systemClipboardData.elements,
@@ -163,6 +202,7 @@ export const parseClipboard = async (
         text: isPlainPaste
           ? JSON.stringify(systemClipboardData.elements, null, 2)
           : undefined,
+        programmaticAPI,
       };
     }
   } catch (e) {}

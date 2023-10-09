@@ -1,13 +1,17 @@
-import { BOUND_TEXT_PADDING } from "../constants";
+import { BOUND_TEXT_PADDING, FONT_FAMILY } from "../constants";
 import { API } from "../tests/helpers/api";
 import {
-  computeContainerHeightForBoundText,
+  computeContainerDimensionForBoundText,
   getContainerCoords,
-  getMaxContainerWidth,
-  getMaxContainerHeight,
+  getBoundTextMaxWidth,
+  getBoundTextMaxHeight,
   wrapText,
+  detectLineHeight,
+  getLineHeightInPx,
+  getDefaultLineHeight,
+  parseTokens,
 } from "./textElement";
-import { FontString } from "./types";
+import { ExcalidrawTextElementWithContainer, FontString } from "./types";
 
 describe("Test wrapText", () => {
   const font = "20px Cascadia, width: Segoe UI Emoji" as FontString;
@@ -16,7 +20,7 @@ describe("Test wrapText", () => {
     const text = "Hello whats up     ";
     const maxWidth = 200 - BOUND_TEXT_PADDING * 2;
     const res = wrapText(text, font, maxWidth);
-    expect(res).toBe("Hello whats up    ");
+    expect(res).toBe(text);
   });
 
   it("should work with emojis", () => {
@@ -26,7 +30,7 @@ describe("Test wrapText", () => {
     expect(res).toBe("😀");
   });
 
-  it("should show the text correctly when min width reached", () => {
+  it("should show the text correctly when max width reached", () => {
     const text = "Hello😀";
     const maxWidth = 10;
     const res = wrapText(text, font, maxWidth);
@@ -35,13 +39,12 @@ describe("Test wrapText", () => {
 
   describe("When text doesn't contain new lines", () => {
     const text = "Hello whats up";
+
     [
       {
         desc: "break all words when width of each word is less than container width",
-        width: 90,
-        res: `Hello 
-whats 
-up`,
+        width: 80,
+        res: `Hello \nwhats \nup`,
       },
       {
         desc: "break all characters when width of each character is less than container width",
@@ -62,9 +65,8 @@ p`,
       {
         desc: "break words as per the width",
 
-        width: 150,
-        res: `Hello whats 
-up`,
+        width: 140,
+        res: `Hello whats \nup`,
       },
       {
         desc: "fit the container",
@@ -93,10 +95,8 @@ whats up`;
     [
       {
         desc: "break all words when width of each word is less than container width",
-        width: 90,
-        res: `Hello
-whats 
-up`,
+        width: 80,
+        res: `Hello\nwhats \nup`,
       },
       {
         desc: "break all characters when width of each character is less than container width",
@@ -135,17 +135,14 @@ whats up`,
       });
     });
   });
+
   describe("When text is long", () => {
     const text = `hellolongtextthisiswhatsupwithyouIamtypingggggandtypinggg break it now`;
     [
       {
         desc: "fit characters of long string as per container width",
         width: 170,
-        res: `hellolongtextth
-isiswhatsupwith
-youIamtypingggg
-gandtypinggg 
-break it now`,
+        res: `hellolongtextth\nisiswhatsupwith\nyouIamtypingggg\ngandtypinggg \nbreak it now`,
       },
 
       {
@@ -164,8 +161,7 @@ now`,
         desc: "fit the long text when container width is greater than text length and move the rest to next line",
 
         width: 600,
-        res: `hellolongtextthisiswhatsupwithyouIamtypingggggandtypinggg 
-break it now`,
+        res: `hellolongtextthisiswhatsupwithyouIamtypingggggandtypinggg \nbreak it now`,
       },
     ].forEach((data) => {
       it(`should ${data.desc}`, () => {
@@ -173,6 +169,70 @@ break it now`,
         expect(res).toEqual(data.res);
       });
     });
+  });
+
+  it("should wrap the text correctly when word length is exactly equal to max width", () => {
+    const text = "Hello Excalidraw";
+    // Length of "Excalidraw" is 100 and exacty equal to max width
+    const res = wrapText(text, font, 100);
+    expect(res).toEqual(`Hello \nExcalidraw`);
+  });
+
+  it("should return the text as is if max width is invalid", () => {
+    const text = "Hello Excalidraw";
+    expect(wrapText(text, font, NaN)).toEqual(text);
+    expect(wrapText(text, font, -1)).toEqual(text);
+    expect(wrapText(text, font, Infinity)).toEqual(text);
+  });
+
+  it("should wrap the text correctly when text contains hyphen", () => {
+    let text =
+      "Wikipedia is hosted by Wikimedia- Foundation, a non-profit organization that also hosts a range-of other projects";
+    const res = wrapText(text, font, 110);
+    expect(res).toBe(
+      `Wikipedia \nis hosted \nby \nWikimedia-\nFoundation,\na non-\nprofit \norganizati\non that \nalso hosts\na range-of\nother \nprojects`,
+    );
+
+    text = "Hello thereusing-now";
+    expect(wrapText(text, font, 100)).toEqual("Hello \nthereusin\ng-now");
+  });
+});
+
+describe("Test parseTokens", () => {
+  it("should split into tokens correctly", () => {
+    let text = "Excalidraw is a virtual collaborative whiteboard";
+    expect(parseTokens(text)).toEqual([
+      "Excalidraw",
+      "is",
+      "a",
+      "virtual",
+      "collaborative",
+      "whiteboard",
+    ]);
+
+    text =
+      "Wikipedia is hosted by Wikimedia- Foundation, a non-profit organization that also hosts a range-of other projects";
+    expect(parseTokens(text)).toEqual([
+      "Wikipedia",
+      "is",
+      "hosted",
+      "by",
+      "Wikimedia-",
+      "",
+      "Foundation,",
+      "a",
+      "non-",
+      "profit",
+      "organization",
+      "that",
+      "also",
+      "hosts",
+      "a",
+      "range-",
+      "of",
+      "other",
+      "projects",
+    ]);
   });
 });
 
@@ -214,7 +274,7 @@ describe("Test measureText", () => {
     });
   });
 
-  describe("Test computeContainerHeightForBoundText", () => {
+  describe("Test computeContainerDimensionForBoundText", () => {
     const params = {
       width: 178,
       height: 194,
@@ -225,7 +285,9 @@ describe("Test measureText", () => {
         type: "rectangle",
         ...params,
       });
-      expect(computeContainerHeightForBoundText(element, 150)).toEqual(160);
+      expect(computeContainerDimensionForBoundText(150, element.type)).toEqual(
+        160,
+      );
     });
 
     it("should compute container height correctly for ellipse", () => {
@@ -233,7 +295,9 @@ describe("Test measureText", () => {
         type: "ellipse",
         ...params,
       });
-      expect(computeContainerHeightForBoundText(element, 150)).toEqual(226);
+      expect(computeContainerDimensionForBoundText(150, element.type)).toEqual(
+        226,
+      );
     });
 
     it("should compute container height correctly for diamond", () => {
@@ -241,11 +305,13 @@ describe("Test measureText", () => {
         type: "diamond",
         ...params,
       });
-      expect(computeContainerHeightForBoundText(element, 150)).toEqual(320);
+      expect(computeContainerDimensionForBoundText(150, element.type)).toEqual(
+        320,
+      );
     });
   });
 
-  describe("Test getMaxContainerWidth", () => {
+  describe("Test getBoundTextMaxWidth", () => {
     const params = {
       width: 178,
       height: 194,
@@ -253,39 +319,114 @@ describe("Test measureText", () => {
 
     it("should return max width when container is rectangle", () => {
       const container = API.createElement({ type: "rectangle", ...params });
-      expect(getMaxContainerWidth(container)).toBe(168);
+      expect(getBoundTextMaxWidth(container)).toBe(168);
     });
 
     it("should return max width when container is ellipse", () => {
       const container = API.createElement({ type: "ellipse", ...params });
-      expect(getMaxContainerWidth(container)).toBe(116);
+      expect(getBoundTextMaxWidth(container)).toBe(116);
     });
 
     it("should return max width when container is diamond", () => {
       const container = API.createElement({ type: "diamond", ...params });
-      expect(getMaxContainerWidth(container)).toBe(79);
+      expect(getBoundTextMaxWidth(container)).toBe(79);
     });
   });
 
-  describe("Test getMaxContainerHeight", () => {
+  describe("Test getBoundTextMaxHeight", () => {
     const params = {
       width: 178,
       height: 194,
+      id: '"container-id',
     };
+
+    const boundTextElement = API.createElement({
+      type: "text",
+      id: "text-id",
+      x: 560.51171875,
+      y: 202.033203125,
+      width: 154,
+      height: 175,
+      fontSize: 20,
+      fontFamily: 1,
+      text: "Excalidraw is a\nvirtual \nopensource \nwhiteboard for \nsketching \nhand-drawn like\ndiagrams",
+      textAlign: "center",
+      verticalAlign: "middle",
+      containerId: params.id,
+    }) as ExcalidrawTextElementWithContainer;
 
     it("should return max height when container is rectangle", () => {
       const container = API.createElement({ type: "rectangle", ...params });
-      expect(getMaxContainerHeight(container)).toBe(184);
+      expect(getBoundTextMaxHeight(container, boundTextElement)).toBe(184);
     });
 
     it("should return max height when container is ellipse", () => {
       const container = API.createElement({ type: "ellipse", ...params });
-      expect(getMaxContainerHeight(container)).toBe(127);
+      expect(getBoundTextMaxHeight(container, boundTextElement)).toBe(127);
     });
 
     it("should return max height when container is diamond", () => {
       const container = API.createElement({ type: "diamond", ...params });
-      expect(getMaxContainerHeight(container)).toBe(87);
+      expect(getBoundTextMaxHeight(container, boundTextElement)).toBe(87);
     });
+
+    it("should return max height when container is arrow", () => {
+      const container = API.createElement({
+        type: "arrow",
+        ...params,
+      });
+      expect(getBoundTextMaxHeight(container, boundTextElement)).toBe(194);
+    });
+
+    it("should return max height when container is arrow and height is less than threshold", () => {
+      const container = API.createElement({
+        type: "arrow",
+        ...params,
+        height: 70,
+        boundElements: [{ type: "text", id: "text-id" }],
+      });
+
+      expect(getBoundTextMaxHeight(container, boundTextElement)).toBe(
+        boundTextElement.height,
+      );
+    });
+  });
+});
+
+const textElement = API.createElement({
+  type: "text",
+  text: "Excalidraw is a\nvirtual \nopensource \nwhiteboard for \nsketching \nhand-drawn like\ndiagrams",
+  fontSize: 20,
+  fontFamily: 1,
+  height: 175,
+});
+
+describe("Test detectLineHeight", () => {
+  it("should return correct line height", () => {
+    expect(detectLineHeight(textElement)).toBe(1.25);
+  });
+});
+
+describe("Test getLineHeightInPx", () => {
+  it("should return correct line height", () => {
+    expect(
+      getLineHeightInPx(textElement.fontSize, textElement.lineHeight),
+    ).toBe(25);
+  });
+});
+
+describe("Test getDefaultLineHeight", () => {
+  it("should return line height using default font family when not passed", () => {
+    //@ts-ignore
+    expect(getDefaultLineHeight()).toBe(1.25);
+  });
+
+  it("should return line height using default font family for unknown font", () => {
+    const UNKNOWN_FONT = 5;
+    expect(getDefaultLineHeight(UNKNOWN_FONT)).toBe(1.25);
+  });
+
+  it("should return correct line height", () => {
+    expect(getDefaultLineHeight(FONT_FAMILY.Cascadia)).toBe(1.2);
   });
 });
